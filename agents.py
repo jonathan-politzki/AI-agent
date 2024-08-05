@@ -32,3 +32,20 @@ def save_to_csv(data, output_file, headers=None):
             writer.writerow(headers) # write the headers if provided
         for row in csv.reader(data.splitlines()): # split the data string into rows
             writer.writerow(row) # write the data
+
+
+def analyzer_agent(sample_data):
+    message = client.messages.create(
+        model=sonnet,
+        max_tokens=200, # limit the response to 200 tokens
+        temperature=0.1, # a lower temperature leads to a more focused, deterministic output (what does this really mean?)
+        system=ANALYZER_SYSTEM_PROMPT, # use the predefined system prompt for the analyzer
+        messages=[
+            {
+                "role": "user",
+                "content": ANALYZER_SYSTEM_PROMPT.format(sample_data=sample_data)
+                # format the user prompt with the sample data
+            }
+        ]
+    )
+    return message.content[0].text # return the content of the first message in the response
