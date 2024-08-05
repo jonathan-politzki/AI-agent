@@ -1,13 +1,20 @@
-# Use an official Python runtime as the base image
+# Use an official Python runtime as a parent image
 FROM python:3.11-slim
 
 # Set the working directory in the container
 WORKDIR /app
 
-# Copy the Python script to the container
-COPY hello.py .
-COPY agents.py .
+# Copy the current directory contents into the container at /app
+COPY requirements.txt .
 
-# Run the Python script when the container launches
+# Install any needed packages specified in requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# copy the python scripts and other necessary files
+COPY agents.py prompts.py ./
+
+# create a directory for data
+RUN mkdir /app/data
+
+# Run agents.py when the container launches
 CMD ["python", "agents.py"]
-CMD ["python", "hello.py"]
