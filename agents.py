@@ -1,62 +1,79 @@
 # agents.py
 
-# importing necessary libraries
 import os
 import csv
 import numpy
 import anthropic
 from prompts import *
+import time
+from tenacity import retry, stop_after_attempt, wait_exponential
 
-# set up anthropic key
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+def analyzer_agent_with_retry(sample_data):
+    return analyzer_agent(sample_data)
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+def generator_agent_with_retry(analysis_results, sample_data, num_rows=30):
+    return generator_agent(analysis_results, sample_data, num_rows)
+
+
+print("Contents of /app/data:")
+print(os.listdir('/app/data'))
+
 if not os.getenv("ANTHROPIC_API_KEY"):
-    os.environ["ANTHROPIC_API_KEY"] = input("Please enter your Anthropics API key: ") # prompt the user to enter their API key
+    os.environ["ANTHROPIC_API_KEY"] = input("Please enter your Anthropic API key: ")
 
-# create the anthropic client
-client = anthropic.AnthropicClient()
-sonnet - "claude-3-5-sonnet-20240620"
+client = anthropic.Anthropic()
 
-# function to read the CSV file from the User
 def read_csv(file_path):
     data = []
-    with open(file_path, 'r', newline="") as csvfile: # open the CSV file in read mode
-        csv_reader = csv.reader(csvfile) # create a CSV reader object
+    with open(file_path, 'r', newline="") as csvfile:
+        csv_reader = csv.reader(csvfile)
         for row in csv_reader:
             data.append(row)
     return data
 
-# function to save the generated data to a new CSV file
 def save_to_csv(data, output_file, headers=None):
-    mode = 'w' if headers else 'a' # Set the file mode: 'w' if headers are provided and 'a' otherwise
-    with open(output_file, mode, newline="") as f: # open the CSV file in write mode
-        writer = csv.writer(f) # create a CSV writer object
+    mode = 'w' if headers else 'a'
+    with open(output_file, mode, newline="") as f:
+        writer = csv.writer(f)
         if headers:
-            writer.writerow(headers) # write the headers if provided
-        for row in csv.reader(data.splitlines()): # split the data string into rows
-            writer.writerow(row) # write the data
-
+            writer.writerow(headers)
+        if isinstance(data, str):
+            for row in csv.reader(data.splitlines()):
+                writer.writerow(row)
+        elif isinstance(data, list):
+            for row in data:
+                if isinstance(row, str):
+                    writer.writerow(row.split(','))
+                elif isinstance(row, list):
+                    writer.writerow(row)
+                else:
+                    print(f"Skipping invalid row: {row}")
+        else:
+            print(f"Unsupported data type: {type(data)}")
 
 def analyzer_agent(sample_data):
     message = client.messages.create(
-        model=sonnet,
-        max_tokens=200, # limit the response to 200 tokens
-        temperature=0.1, # a lower temperature leads to a more focused, deterministic output (what does this really mean?)
-        system=ANALYZER_SYSTEM_PROMPT, # use the predefined system prompt for the analyzer
+        model="claude-3-5-sonnet-20240620",
+        max_tokens=200,
+        temperature=0.1,
+        system=ANALYZER_SYSTEM_PROMPT,
         messages=[
             {
                 "role": "user",
                 "content": ANALYZER_USER_PROMPT.format(sample_data=sample_data)
-                # format the user prompt with the sample data
             }
         ]
     )
-    return message.content[0].text # return the content of the first message in the response
+    return message.content
 
 def generator_agent(analysis_results, sample_data, num_rows=30):
     message = client.messages.create(
-        model=sonnet,
-        max_tokens=1500, # limit the response to 200 tokens
-        temperature=1, # a lower temperature leads to a more focused, deterministic output
-        system=GENERATOR_SYSTEM_PROMPT, # use the predefined system prompt for the generator
+        model="claude-3-5-sonnet-20240620",
+        max_tokens=1500,
+        temperature=1,
+        system=GENERATOR_SYSTEM_PROMPT,
         messages=[
             {
                 "role": "user",
@@ -64,51 +81,61 @@ def generator_agent(analysis_results, sample_data, num_rows=30):
                     num_rows=num_rows,
                     analysis_results=analysis_results,
                     sample_data=sample_data
-                    )
-                # format the user prompt with the analysis results, sample data, and number of rows
+                )
             }
         ]
     )
+    # Process the generated content
+    if isinstance(message.content, list) and len(message.content) > 0:
+        content = message.content[0].text
+    else:
+        content = str(message.content)
+    
+    # Split the content into individual rows
+    rows = content.strip().split('\n')
+    return rows
 
-# main execution flow
+# Main execution flow
+while True:
+    file_name = input("\nEnter the name of the CSV file (e.g., input.csv): ")
+    file_path = os.path.join('/app/data', file_name)
+    if os.path.exists(file_path):
+        print(f"File found: {file_path}")
+        break
+    else:
+        print(f"File not found: {file_path}")
+        print("Please make sure the file is in the 'data' directory and try again.")
 
-# get input file path from the user
-file_path = input("\Enter the path to the CSV file: ")
-file_path = os.path.join('/app/data', file_path) # join the file path with the data directory
-desired_rows = int(input("Enter the number of rows you want to generate: ")) # get the desired number of rows from the user
+try:
+    sample_data = read_csv(file_path)
+    sample_data_str = "\n".join([",".join(row) for row in sample_data])
+    print(f"Successfully read {len(sample_data)} rows from {file_name}")
+except Exception as e:
+    print(f"Error reading the CSV file: {e}")
+    exit(1)
 
-# read the sample data from the input to the CSV file
-sample_data = read_csv(file_path)
-sample_data_str = "\n".join([",".join(row) for row in sample_data]) # converts 2d to string
+desired_rows = int(input("Enter the number of rows you want to generate: "))
 
-# print statements to update user
 print("\nLaunching team of agents...")
 
-analysis_result = analyzer_agent(sample_data_str) # analyze the sample data
+analysis_result = analyzer_agent_with_retry(sample_data_str)
 print("\nAnalyzer agent output: ####\n")
-
 print(analysis_result)
 print("\n-----------------------------------\n\nGenerating new data...")
 
-# set up the output file
 output_file = "/app/data/new_dataset.csv"
-headers = sample_data[0] # get the headers from the sample data
- 
-# create the output file with headers
+headers = sample_data[0]
+
 save_to_csv("", output_file, headers=headers)
 
-# generated data in batches until we reach the desired number of rows
-while generated_rows < desired rows:
-    # calculate the number of rows to generate in this batch
+generated_rows = 0
+batch_size = 10
+
+while generated_rows < desired_rows:
     rows_to_generate = min(batch_size, desired_rows - generated_rows)
-    # generate a batch of data using the Generator Agent
-    generated_data = generator_agent(analysis_result, sample_data_str, rows_to_generate)
-    # append the generated data to the output file
+    generated_data = generator_agent_with_retry(analysis_result, sample_data_str, rows_to_generate)
     save_to_csv(generated_data, output_file)
-    # update the count of generated rows
-    generated_rows += rows_to_generate
-    # print progress update
+    generated_rows += len(generated_data)
     print(f"Generated {generated_rows} rows out of {desired_rows}")
 
-# inform the user that the process is complete
 print(f"\nGenerated data has been saved to {output_file}")
